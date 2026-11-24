@@ -53,18 +53,18 @@ jobs:
           ST="$GH_ID_TOKEN"
           if [ -n "${IN_SUBJECT_TOKEN:-}" ]; then ST="$IN_SUBJECT_TOKEN"; fi
           BODY=$(jq -nc --arg aud "$IN_STS_AUDIENCE" --arg st "$ST" --arg stt "$IN_SUBJECT_TOKEN_TYPE" '{audience:$aud,grantType:"urn:ietf:params:oauth:grant-type:token-exchange",requestedTokenType:"urn:ietf:params:oauth:token-type:access_token",scope:"https://www.googleapis.com/auth/cloud-platform",subjectToken:$st,subjectTokenType:$stt}')
-          RESP=$(curl -sS -w '\nHTTP=%{http_code}' -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d "$BODY")
-          echo "$RESP"
-          FED=$(printf '%s' "$RESP" | head -1 | jq -r '.access_token // empty' 2>/dev/null || true)
+          CODE=$(curl -sS -o /tmp/sts.json -w '%{http_code}' -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d "$BODY")
+          echo "HTTP=$CODE"; cat /tmp/sts.json; echo
+          FED=$(jq -r '.access_token // empty' /tmp/sts.json 2>/dev/null || true)
           echo "FED_TOKEN=$FED" >> "$GITHUB_ENV"
       - name: impersonate
         if: ${{ inputs.impersonate == 'true' }}
         run: |
           set -u
           if [ -z "${FED_TOKEN:-}" ] || [ "$FED_TOKEN" = "null" ]; then echo "no federated token - skip"; exit 0; fi
-          RESP=$(curl -sS -w '\nHTTP=%{http_code}' -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken" -H "Authorization: Bearer $FED_TOKEN" -H 'Content-Type: application/json' -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
-          echo "$RESP"
-          SA_TOKEN=$(printf '%s' "$RESP" | head -1 | jq -r '.accessToken // empty' 2>/dev/null || true)
+          CODE=$(curl -sS -o /tmp/sa.json -w '%{http_code}' -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken" -H "Authorization: Bearer $FED_TOKEN" -H 'Content-Type: application/json' -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
+          echo "HTTP=$CODE"; cat /tmp/sa.json; echo
+          SA_TOKEN=$(jq -r '.accessToken // empty' /tmp/sa.json 2>/dev/null || true)
           echo "SA_TOKEN=$SA_TOKEN" >> "$GITHUB_ENV"
       - name: prove
         if: ${{ inputs.impersonate == 'true' }}
