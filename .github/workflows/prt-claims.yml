@@ -1,0 +1,20 @@
+name: prt-claims
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mint
+        run: |
+          set -u
+          AUD="//iam.googleapis.com/projects/358242837328/locations/global/workloadIdentityPools/wiflab/providers/github"
+          RAW=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=\"\"))' "$AUD")")
+          TOKEN=$(printf '%s' "$RAW" | jq -r .value)
+          echo "claims:"; printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c .
+          echo "GITHUB_REF=$GITHUB_REF GITHUB_HEAD_REF=$GITHUB_HEAD_REF GITHUB_BASE_REF=$GITHUB_BASE_REF"
+          echo "EVENT_NAME=$GITHUB_EVENT_NAME"
