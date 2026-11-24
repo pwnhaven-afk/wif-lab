@@ -1,0 +1,77 @@
+name: wif-lab
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: "audience claim to request from GitHub"
+        required: false
+        default: "//iam.googleapis.com/projects/358242837328/locations/global/workloadIdentityPools/wiflab/providers/github"
+      sts_audience:
+        description: "audience presented to STS"
+        required: false
+        default: "//iam.googleapis.com/projects/358242837328/locations/global/workloadIdentityPools/wiflab/providers/github"
+      subject_token:
+        description: "optional external subject token (else mint GitHub OIDC token)"
+        required: false
+        default: ""
+      subject_token_type:
+        description: "subject token type"
+        required: false
+        default: "urn:ietf:params:oauth:token-type:jwt"
+      impersonate:
+        description: "impersonate SA (true/false)"
+        required: false
+        default: "true"
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    env:
+      IN_AUDIENCE: ${{ inputs.audience }}
+      IN_STS_AUDIENCE: ${{ inputs.sts_audience }}
+      IN_SUBJECT_TOKEN: ${{ inputs.subject_token }}
+      IN_SUBJECT_TOKEN_TYPE: ${{ inputs.subject_token_type }}
+      IN_IMPERSONATE: ${{ inputs.impersonate }}
+      PROVIDER: "//iam.googleapis.com/projects/358242837328/locations/global/workloadIdentityPools/wiflab/providers/github"
+      SA_EMAIL: "wif-sa@project-ed1ba462-a6e8-4f5f-a0b.iam.gserviceaccount.com"
+    steps:
+      - name: mint
+        run: |
+          set -u
+          AUD="${IN_AUDIENCE:-$PROVIDER}"
+          echo "requesting audience: $AUD"
+          RAW=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$AUD")")
+          TOKEN=$(printf '%s' "$RAW" | jq -r .value)
+          echo "token_len=${#TOKEN}"
+          echo "GH_ID_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "claims:"; printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c . || true
+      - name: exchange
+        run: |
+          set -u
+          ST="$GH_ID_TOKEN"
+          if [ -n "${IN_SUBJECT_TOKEN:-}" ]; then ST="$IN_SUBJECT_TOKEN"; fi
+          BODY=$(jq -nc --arg aud "$IN_STS_AUDIENCE" --arg st "$ST" --arg stt "$IN_SUBJECT_TOKEN_TYPE" '{audience:$aud,grantType:"urn:ietf:params:oauth:grant-type:token-exchange",requestedTokenType:"urn:ietf:params:oauth:token-type:access_token",scope:"https://www.googleapis.com/auth/cloud-platform",subjectToken:$st,subjectTokenType:$stt}')
+          RESP=$(curl -sS -w '\nHTTP=%{http_code}' -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d "$BODY")
+          echo "$RESP"
+          FED=$(printf '%s' "$RESP" | head -1 | jq -r '.access_token // empty' 2>/dev/null || true)
+          echo "FED_TOKEN=$FED" >> "$GITHUB_ENV"
+      - name: impersonate
+        if: ${{ inputs.impersonate == 'true' }}
+        run: |
+          set -u
+          if [ -z "${FED_TOKEN:-}" ] || [ "$FED_TOKEN" = "null" ]; then echo "no federated token - skip"; exit 0; fi
+          RESP=$(curl -sS -w '\nHTTP=%{http_code}' -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken" -H "Authorization: Bearer $FED_TOKEN" -H 'Content-Type: application/json' -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
+          echo "$RESP"
+          SA_TOKEN=$(printf '%s' "$RESP" | head -1 | jq -r '.accessToken // empty' 2>/dev/null || true)
+          echo "SA_TOKEN=$SA_TOKEN" >> "$GITHUB_ENV"
+      - name: prove
+        if: ${{ inputs.impersonate == 'true' }}
+        run: |
+          set -u
+          if [ -z "${SA_TOKEN:-}" ] || [ "$SA_TOKEN" = "null" ]; then echo "no SA token - skip"; exit 0; fi
+          echo "--- resourcemanager projects.get ---"
+          curl -sS -w '\nHTTP=%{http_code}\n' -H "Authorization: Bearer $SA_TOKEN" "https://cloudresourcemanager.googleapis.com/v1/projects/358242837328" | head -40
+          echo "--- storage bucket list (proof bucket) ---"
+          curl -sS -w '\nHTTP=%{http_code}\n' -H "Authorization: Bearer $SA_TOKEN" "https://storage.googleapis.com/storage/v1/b/wif-proof-358242837328" | head -40
